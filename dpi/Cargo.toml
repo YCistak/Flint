@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+pcap = { version = "1", optional = true }
+windivert = { version = "0.2", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pcap = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+pcap = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windivert = "0.2"
 
 [lib]
 name = "flint_dpi"

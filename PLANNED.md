@@ -142,7 +142,7 @@ A bundled blocklist ships with Flint — known blocked domains/IPs for Turkey, R
 ## Core Features
 
 ### v0.1.0 — DPI Bypass MVP
-- [ ] Rust packet capture layer (Linux: netfilter, Windows: WinDivert, macOS: pfctl)
+- [ ] Rust packet capture layer (Linux: netfilter, Windows: WinDivert, macOS: libpcap/BPF)
 - [ ] TCP split hello strategy
 - [ ] TTL manipulation strategy
 - [ ] Basic Go CLI
