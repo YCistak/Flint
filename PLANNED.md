@@ -142,12 +142,16 @@ A bundled blocklist ships with Flint — known blocked domains/IPs for Turkey, R
 ## Core Features
 
 ### v0.1.0 — DPI Bypass MVP
-- [ ] Rust packet capture layer (Linux: netfilter, Windows: WinDivert, macOS: libpcap/BPF)
-- [ ] TCP split hello strategy
-- [ ] TTL manipulation strategy
-- [ ] Basic Go CLI
-- [ ] Auto-detect platform (Linux/Windows/macOS)
-- [ ] Bundled blocklist (Turkey + Russia baseline)
+- [x] Rust packet capture layer (Linux: netfilter/nfqueue, Windows: WinDivert, macOS: libpcap/BPF)
+- [x] IP and TCP header parsers
+- [x] TLS ClientHello detector with SNI extraction
+- [x] TCP split hello strategy
+- [x] TTL manipulation strategy
+- [x] Basic Go CLI (cobra with start/stop/status/add-vps/blocklist/node commands)
+- [x] Project structure (Go modules, Rust crate, config loader, fallback manager)
+- [ ] Auto-detect platform (Linux/Windows/macOS) — architecture in place, not yet integrated
+- [ ] Bundled blocklist (Turkey + Russia baseline) — not implemented
+- [ ] End-to-end DPI bypass integration — packet capture and strategies not yet wired to daemon
 
 ### v0.2.0 — Tor Integration
 - [ ] Tor integration via bine/pt
