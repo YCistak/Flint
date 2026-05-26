@@ -1,0 +1,10 @@
+[package]
+name = "flint-dpi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[lib]
+name = "flint_dpi"
+crate-type = ["cdylib", "rlib"]
