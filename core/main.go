@@ -1,7 +1,4 @@
 // Package core provides the daemon library for Flint.
-//
-// The Daemon type orchestrates the fallback chain and is used by both
-// the CLI and the standalone daemon entry point.
 package core
 
 import (
@@ -13,74 +10,82 @@ import (
 	"syscall"
 
 	"github.com/YCistak/flint/core/config"
-	"github.com/YCistak/flint/core/fallback"
 	"github.com/YCistak/flint/core/detector"
+	"github.com/YCistak/flint/core/fallback"
+	"github.com/YCistak/flint/core/ipc"
 )
 
 // Daemon represents the Flint daemon instance.
 type Daemon struct {
 	config  *config.Config
 	manager *fallback.Manager
-	done    chan struct{}
 }
 
-// NewDaemon creates a new daemon instance.
+// NewDaemon creates a new Daemon from cfg.
 func NewDaemon(cfg *config.Config) (*Daemon, error) {
-	// Stub out detector for v0.1.0
 	det := detector.NewDetector()
-
-	// Build fallback handlers (stubs for now).
-	// In later versions, these will be actual DPI, VLESS, Pheron, Tor handlers.
 	handlers := []fallback.Handler{
 		det.DPIHandler(),
 		det.PheronHandler(),
 		det.TorHandler(),
 	}
-
-	mgr := fallback.New(handlers)
 	return &Daemon{
 		config:  cfg,
-		manager: mgr,
-		done:    make(chan struct{}),
+		manager: fallback.New(handlers),
 	}, nil
 }
 
-// Run starts the daemon and blocks until shutdown.
+// Run starts the daemon and blocks until shutdown (signal or IPC stop command).
 func (d *Daemon) Run(ctx context.Context) error {
-	log.Printf("Flint daemon starting...")
+	// Write PID file so the CLI can report which process is running.
+	// This must succeed before the IPC socket is opened; fail hard so the
+	// caller knows the daemon did not start cleanly.
+	if err := ipc.WritePID(ipc.PIDPath); err != nil {
+		return fmt.Errorf("could not write PID file %s: %w", ipc.PIDPath, err)
+	}
+	defer ipc.RemovePID(ipc.PIDPath)
 
-	// Start the fallback manager.
+	// Start fallback chain.
 	if err := d.manager.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start fallback manager: %w", err)
 	}
+	defer d.manager.Stop(ctx) //nolint:errcheck
 
-	// Set up signal handling for graceful shutdown.
+	// Start IPC server.
+	stopFromIPC := make(chan struct{}, 1)
+	srv, err := ipc.NewServer(ipc.SocketPath, d, stopFromIPC)
+	if err != nil {
+		return fmt.Errorf("failed to start IPC server: %w", err)
+	}
+	go srv.Serve()
+	defer srv.Close(ipc.SocketPath)
+
+	log.Printf("Flint daemon running (pid=%d, socket=%s)", os.Getpid(), ipc.SocketPath)
+
+	// Block until signal, IPC stop, or context cancellation.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
 
 	select {
 	case sig := <-sigChan:
-		log.Printf("Received signal: %v", sig)
-		if err := d.manager.Stop(ctx); err != nil {
-			log.Printf("Error stopping manager: %v", err)
-		}
+		log.Printf("received signal %v — shutting down", sig)
+	case <-stopFromIPC:
+		log.Printf("stop requested via IPC — shutting down")
 	case <-ctx.Done():
-		log.Printf("Context cancelled")
-		if err := d.manager.Stop(ctx); err != nil {
-			log.Printf("Error stopping manager: %v", err)
-		}
+		log.Printf("context cancelled — shutting down")
 	}
 
 	log.Printf("Flint daemon stopped")
 	return nil
 }
 
-// CurrentMethod returns the currently active method name.
-func (d *Daemon) CurrentMethod() string {
-	return d.manager.Current()
-}
-
-// Status returns the status of all fallback methods.
+// Status returns the status of all fallback methods (used by the IPC server).
 func (d *Daemon) Status() map[string]interface{} {
 	return d.manager.Status()
+}
+
+// CurrentMethod returns the name of the currently active fallback method.
+func (d *Daemon) CurrentMethod() string {
+	return d.manager.Current()
 }

@@ -149,6 +149,7 @@ A bundled blocklist ships with Flint — known blocked domains/IPs for Turkey, R
 - [x] TTL manipulation strategy
 - [x] Basic Go CLI (cobra with start/stop/status/add-vps/blocklist/node commands)
 - [x] Project structure (Go modules, Rust crate, config loader, fallback manager)
+- [x] Unix socket permissions set to 0666 so non-root users can connect without sudo
 - [ ] Auto-detect platform (Linux/Windows/macOS) — architecture in place, not yet integrated
 - [ ] Bundled blocklist (Turkey + Russia baseline) — not implemented
 - [ ] End-to-end DPI bypass integration — packet capture and strategies not yet wired to daemon
