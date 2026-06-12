@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -91,12 +93,76 @@ var statusCmd = &cobra.Command{
 	},
 }
 
+var (
+	vpsName    string
+	vpsSNI     string
+	vpsNoTLS   bool
+	vpsDisable bool
+)
+
 var addVpsCmd = &cobra.Command{
 	Use:   "add-vps <address:port> <uuid>",
 	Short: "Add a VPS server (VLESS)",
-	Args:  cobra.ExactArgs(2),
+	Long: `Add a VLESS VPS server to the fallback chain and save it to the Flint config.
+
+The server is tried after DPI bypass and before Pheron/Tor. TLS is enabled by
+default (the standard VLESS-over-TLS setup); pass --no-tls to disable it.`,
+	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("TODO: Add VPS server %s with UUID %s\n", args[0], args[1])
+		host, portStr, err := net.SplitHostPort(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid address %q (want host:port): %w", args[0], err)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 {
+			return fmt.Errorf("invalid port %q", portStr)
+		}
+		uuid := args[1]
+
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+
+		name := vpsName
+		if name == "" {
+			name = host
+		}
+
+		server := config.ServerConfig{
+			Name:    name,
+			Address: host,
+			Port:    port,
+			UUID:    uuid,
+			TLS:     !vpsNoTLS,
+			SNI:     vpsSNI,
+			Enabled: !vpsDisable,
+		}
+
+		// Replace an existing server with the same name, otherwise append.
+		replaced := false
+		for i := range cfg.Tunnel.Servers {
+			if cfg.Tunnel.Servers[i].Name == name {
+				cfg.Tunnel.Servers[i] = server
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			cfg.Tunnel.Servers = append(cfg.Tunnel.Servers, server)
+		}
+
+		if err := cfg.Save(); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+
+		action := "Added"
+		if replaced {
+			action = "Updated"
+		}
+		fmt.Printf("%s VPS server %q (%s:%d, TLS=%v, enabled=%v)\n",
+			action, name, host, port, server.TLS, server.Enabled)
+		fmt.Println("Restart the daemon (flint stop && flint start) to apply.")
 		return nil
 	},
 }
@@ -127,6 +193,11 @@ var nodeCmd = &cobra.Command{
 func init() {
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Config file path")
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Verbose logging")
+
+	addVpsCmd.Flags().StringVar(&vpsName, "name", "", "Friendly name for the server (defaults to its address)")
+	addVpsCmd.Flags().StringVar(&vpsSNI, "sni", "", "TLS server name to present (defaults to the address)")
+	addVpsCmd.Flags().BoolVar(&vpsNoTLS, "no-tls", false, "Disable TLS (plain VLESS)")
+	addVpsCmd.Flags().BoolVar(&vpsDisable, "disabled", false, "Save the server but leave it out of the fallback chain")
 
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(stopCmd)

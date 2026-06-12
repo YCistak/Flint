@@ -25,11 +25,19 @@ type Daemon struct {
 // NewDaemon creates a new Daemon from cfg.
 func NewDaemon(cfg *config.Config) (*Daemon, error) {
 	det := detector.NewDetectorWithTTL(time.Duration(cfg.Daemon.DetectionCacheTTL) * time.Second)
-	handlers := []fallback.Handler{
-		det.DPIHandler(),
-		det.PheronHandler(),
-		det.TorHandler(),
+
+	// Build the fallback chain: DPI → VPS (if configured) → Pheron → Tor.
+	handlers := []fallback.Handler{det.DPIHandler()}
+	if server, ok := cfg.Tunnel.FirstEnabledServer(); ok {
+		vlessHandler, err := det.VLESSHandler(server, cfg.Tunnel.ListenSOCKS)
+		if err != nil {
+			return nil, fmt.Errorf("invalid VPS config %q: %w", server.Name, err)
+		}
+		handlers = append(handlers, vlessHandler)
+		log.Printf("VPS tunnel configured: %s (%s:%d)", server.Name, server.Address, server.Port)
 	}
+	handlers = append(handlers, det.PheronHandler(), det.TorHandler())
+
 	return &Daemon{
 		config:  cfg,
 		manager: fallback.New(handlers),

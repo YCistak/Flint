@@ -161,10 +161,10 @@ A bundled blocklist ships with Flint — known blocked domains/IPs for Turkey, R
 - [x] Detection cache (24h TTL, per-domain, invalidate-on-request) — `core/detector/cache.go`
 
 ### v0.3.0 — VPS Tunnel
-- [ ] VLESS protocol implementation
-- [ ] VPS config (add server: address, port, UUID)
-- [ ] Fallback chain: DPI → VPS → Tor
-- [ ] Connection health monitoring
+- [x] VLESS protocol implementation — `tunnel/vless` (request/response header codec + UUID parsing in `vless.go`, VLESS-over-TLS dialer + local SOCKS5 proxy in `handler.go`, implements `fallback.Handler`), tested
+- [x] VPS config (add server: address, port, UUID, TLS) — `flint add-vps <addr:port> <uuid>` with `--name/--sni/--no-tls/--disabled`, persists to `~/.config/flint/config.toml` (`ServerConfig` gained `TLS`/`SNI`; `TunnelConfig.ListenSOCKS`)
+- [x] Fallback chain: DPI → VPS (if configured) → Pheron stub → Tor — wired in `core/main.go` via `det.VLESSHandler`, inserted only when an enabled server exists
+- [x] Connection health monitoring — `Handler.Health` pings 1.1.1.1:80 through the tunnel; background `monitor` goroutine re-pings every 30s and logs health transitions
 
 ### v0.4.0 — Pheron v0.1 (Beta)
 - [ ] Pheron node server (relay mode)

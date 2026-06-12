@@ -6,9 +6,11 @@ import (
 	"log"
 	"time"
 
+	"github.com/YCistak/flint/core/config"
 	"github.com/YCistak/flint/core/dpi"
 	"github.com/YCistak/flint/core/fallback"
 	"github.com/YCistak/flint/tor"
+	"github.com/YCistak/flint/tunnel/vless"
 )
 
 // Detector performs DNS/TCP/RST censorship detection, caches results per
@@ -51,6 +53,20 @@ func (d *Detector) Invalidate(domain string) { d.cache.Invalidate(domain) }
 // DPIHandler returns a Handler that delegates to the compiled Rust dpi library.
 func (d *Detector) DPIHandler() fallback.Handler {
 	return dpi.New()
+}
+
+// VLESSHandler returns a Handler that tunnels traffic through the given VPS
+// server, exposing a local SOCKS5 proxy at listenSOCKS. It returns an error if
+// the server config is invalid (e.g. a malformed UUID).
+func (d *Detector) VLESSHandler(server config.ServerConfig, listenSOCKS string) (fallback.Handler, error) {
+	return vless.New(vless.Config{
+		Address:     server.Address,
+		Port:        server.Port,
+		UUID:        server.UUID,
+		TLS:         server.TLS,
+		SNI:         server.SNI,
+		ListenSOCKS: listenSOCKS,
+	})
 }
 
 // PheronHandler returns a stub handler for the Pheron P2P relay (v0.4.0).

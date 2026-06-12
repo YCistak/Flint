@@ -32,15 +32,35 @@ type DaemonConfig struct {
 type TunnelConfig struct {
 	// Servers: list of VLESS server configurations
 	Servers []ServerConfig `toml:"servers"`
+	// ListenSOCKS: local address the tunnel exposes a SOCKS5 proxy on so
+	// applications (and the fallback manager) can route traffic through the
+	// active VPS. Defaults to 127.0.0.1:1080 when empty.
+	ListenSOCKS string `toml:"listen_socks"`
 }
 
 // ServerConfig represents a single VPS/VLESS server.
 type ServerConfig struct {
-	Name     string `toml:"name"`
-	Address  string `toml:"address"`
-	Port     int    `toml:"port"`
-	UUID     string `toml:"uuid"`
-	Enabled  bool   `toml:"enabled"`
+	Name    string `toml:"name"`
+	Address string `toml:"address"`
+	Port    int    `toml:"port"`
+	UUID    string `toml:"uuid"`
+	// TLS wraps the VLESS stream in TLS (the standard VLESS-over-TLS setup).
+	TLS bool `toml:"tls"`
+	// SNI is the TLS server name to present. Defaults to Address when empty.
+	SNI string `toml:"sni"`
+	// Enabled selects whether this server participates in the fallback chain.
+	Enabled bool `toml:"enabled"`
+}
+
+// FirstEnabledServer returns the first enabled VLESS server and true, or a
+// zero ServerConfig and false when no server is configured/enabled.
+func (t TunnelConfig) FirstEnabledServer() (ServerConfig, bool) {
+	for _, s := range t.Servers {
+		if s.Enabled {
+			return s, true
+		}
+	}
+	return ServerConfig{}, false
 }
 
 // PheronConfig contains P2P relay settings.
@@ -62,7 +82,8 @@ func DefaultConfig() *Config {
 			DetectionCacheTTL: 86400,
 		},
 		Tunnel: TunnelConfig{
-			Servers: nil,
+			Servers:     nil,
+			ListenSOCKS: "127.0.0.1:1080",
 		},
 		Pheron: PheronConfig{
 			Enabled:        true,
