@@ -19,6 +19,13 @@ import (
 // Protocol version carried at the head of every setup payload.
 const protocolVersion byte = 0x01
 
+// Message types prefix every connection to a node's listener, distinguishing a
+// circuit setup from a gossip exchange so both can share the same port.
+const (
+	MsgCircuit byte = 0x01 // a circuit layer follows (one length-prefixed frame)
+	MsgGossip  byte = 0x02 // a gossip request follows (one length-prefixed frame)
+)
+
 // Setup commands.
 const (
 	CmdConnect byte = 0x01 // exit hop: connect to destination

@@ -57,9 +57,11 @@ type Handler struct {
 	node *node.Server
 	pool *pool.Pool
 
-	mu       sync.Mutex
-	listener net.Listener
-	running  bool
+	mu           sync.Mutex
+	listener     net.Listener
+	running      bool
+	gossip       *pool.Gossip
+	gossipCancel context.CancelFunc
 }
 
 // New constructs a Pheron handler, generating a fresh node identity.
@@ -133,6 +135,14 @@ func (h *Handler) Start(_ context.Context) error {
 	h.listener = ln
 	h.running = true
 
+	// Start distributed peer discovery: serve inbound gossip and periodically
+	// exchange peer lists so the pool grows beyond the bootstrap set.
+	h.gossip = pool.NewGossip(h.pool)
+	h.node.SetGossipHandler(h.gossip.HandleInbound)
+	gossipCtx, cancel := context.WithCancel(context.Background())
+	h.gossipCancel = cancel
+	go h.gossip.Run(gossipCtx)
+
 	go h.acceptLoop(ln)
 	log.Printf("pheron[beta]: SOCKS5 proxy on %s, pool has %d node(s)", h.cfg.ListenSOCKS, h.pool.Count())
 	return nil
@@ -146,6 +156,11 @@ func (h *Handler) Stop(_ context.Context) error {
 		return nil
 	}
 	h.running = false
+
+	if h.gossipCancel != nil {
+		h.gossipCancel()
+		h.gossipCancel = nil
+	}
 
 	var firstErr error
 	if h.listener != nil {
@@ -198,13 +213,49 @@ func (h *Handler) Health(ctx context.Context) error {
 	return nil
 }
 
-// dialCircuit selects two nodes and builds a circuit to destination.
+// dialCircuit selects two nodes and builds a circuit to destination, recording
+// the outcome against each hop's reputation. Because a setup failure cannot be
+// attributed to a single hop, both are penalised; a success credits both with
+// the observed setup latency.
 func (h *Handler) dialCircuit(ctx context.Context, p *pool.Pool, destination string) (*client.Circuit, error) {
 	hop1, hop2, err := p.SelectTwo()
 	if err != nil {
 		return nil, err // ErrInsufficientNodes when pool < 2
 	}
-	return client.Dial(ctx, hop1, hop2, destination)
+
+	rep := p.Reputation()
+	start := time.Now()
+	circuit, err := client.Dial(ctx, hop1, hop2, destination)
+	if err != nil {
+		rep.RecordFailure(hop1.ID())
+		rep.RecordFailure(hop2.ID())
+		return nil, err
+	}
+	latency := time.Since(start)
+	rep.RecordSuccess(hop1.ID(), latency)
+	rep.RecordSuccess(hop2.ID(), latency)
+	return circuit, nil
+}
+
+// Metrics exposes Pheron pool health for the IPC status command
+// (fallback.Metricer): node count, regional distribution, reputation summary,
+// and gossip activity.
+func (h *Handler) Metrics() map[string]interface{} {
+	h.mu.Lock()
+	p := h.pool
+	g := h.gossip
+	running := h.running
+	h.mu.Unlock()
+
+	if !running || p == nil {
+		return map[string]interface{}{"running": false}
+	}
+	m := p.Health()
+	m["running"] = true
+	if g != nil {
+		m["gossip"] = g.Stats()
+	}
+	return m
 }
 
 // acceptLoop serves the local SOCKS5 proxy until the listener closes.

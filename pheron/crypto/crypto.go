@@ -9,13 +9,38 @@
 //     public key, derives a key with HKDF-SHA256, and encrypts with
 //     ChaCha20-Poly1305. The ephemeral public key is prepended so the
 //     recipient can recover the shared secret. This is used to wrap each onion
-//     layer during circuit setup. Because the sender key is ephemeral and
-//     discarded, a compromise of the recipient's static key does not reveal
-//     past layers' contents (forward secrecy on the sender side).
+//     layer during circuit setup.
 //
 //   - SecureConn turns the ECDH shared secret returned by Seal/Open into a
 //     bidirectional, length-framed AEAD stream. Nesting two SecureConns lets a
 //     client encrypt a payload in layers so each relay can strip exactly one.
+//
+// # Forward secrecy (per session)
+//
+// The client holds no long-term key material: it generates a fresh ephemeral
+// X25519 key pair for every layer of every circuit (see Seal). Two consequences
+// follow, verified by the tests in this package:
+//
+//   - Session-key independence. Each circuit derives its layer keys from fresh
+//     ephemerals, so compromising one session's keys reveals nothing about any
+//     other session — past or future. There is no client-side long-term secret
+//     whose compromise could unravel recorded traffic.
+//
+//   - Sender-side forward secrecy. The ephemeral private key is discarded as
+//     soon as Seal returns; it is never stored or transmitted (only its public
+//     half goes on the wire). An adversary who later compromises the *client*
+//     learns nothing that decrypts recorded circuits.
+//
+// Caveat — relay static keys are long-term. The shared secret for a layer is
+// ECDH(ephemeral_client, static_relay). Because the ephemeral public key
+// travels in the clear, an adversary who records a circuit and *later* obtains
+// a relay node's static private key can recompute that layer's secret and
+// decrypt the bytes that passed through that relay. Pheron's 2-hop design still
+// prevents such an adversary from linking client to destination unless it
+// compromises *both* hops' static keys for the same circuit. Achieving forward
+// secrecy against relay static-key compromise as well would require an
+// interactive ephemeral-ephemeral handshake (both ends contributing fresh
+// keys); that is left to a future protocol revision and noted in spec/PHERON.md.
 package crypto
 
 import (

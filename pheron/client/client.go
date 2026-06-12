@@ -20,7 +20,7 @@ import (
 // Circuit is an established 2-hop path to a destination. Read and Write carry
 // application plaintext; the layering is handled internally.
 type Circuit struct {
-	conn   net.Conn            // raw TCP to hop 1
+	conn   net.Conn           // raw TCP to hop 1
 	stream io.ReadWriteCloser // nested SecureConn: inner (hop 2) over outer (hop 1)
 }
 
@@ -60,6 +60,12 @@ func Dial(ctx context.Context, hop1, hop2 pool.Node, destination string) (*Circu
 	conn, err := d.DialContext(ctx, "tcp", hop1.Address)
 	if err != nil {
 		return nil, fmt.Errorf("pheron/client: dial hop1 %s: %w", hop1.Address, err)
+	}
+	// Tag the connection as a circuit (vs. a gossip exchange), then send the
+	// outer onion layer.
+	if _, err := conn.Write([]byte{wire.MsgCircuit}); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("pheron/client: send message type: %w", err)
 	}
 	if err := wire.WriteFrame(conn, outerBlob); err != nil {
 		_ = conn.Close()

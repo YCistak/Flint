@@ -176,11 +176,11 @@ A bundled blocklist ships with Flint — known blocked domains/IPs for Turkey, R
 - [x] Labeled "Beta" in CLI — `Handler.Label()` returns "beta" via the optional `fallback.Labeled` interface; surfaced in the status JSON payload
 
 ### v0.5.0 — Pheron v0.2 (Stable)
-- [ ] Distributed peer discovery (no central bootstrap dependency)
-- [ ] ASN/geo-aware node selection (avoid same region for both hops)
-- [ ] Forward secrecy per session
-- [ ] Node reputation scoring (latency, reliability)
-- [ ] Pool health metrics
+- [x] Distributed peer discovery (no central bootstrap dependency) — `pheron/pool/discovery.go` gossip protocol: nodes periodically exchange peer lists over the relay listener (`wire.MsgGossip`), merging learned peers so the pool grows past the bootstrap set; tested transitively (A learns C via B)
+- [x] ASN/geo-aware node selection (avoid same region for both hops) — `SelectTwo` in `pheron/pool/pool.go` weights the second hop by a `regionDiversityBonus` via a pluggable `Geolocator` (default heuristic buckets public IPv4 by /8 as a GeoIP/ASN placeholder); tested for cross-region preference
+- [x] Forward secrecy per session — verified and documented in `pheron/crypto` package doc + `spec/PHERON.md`: fresh ephemeral X25519 per layer gives per-session key independence and sender-side FS, with the relay-static-key caveat stated honestly; verified by `forward_secrecy_test.go`
+- [x] Node reputation scoring (latency, reliability) — `pheron/pool/reputation.go` (Laplace-smoothed reliability × latency factor, EWMA latency); `SelectTwo` prefers higher scores; handler records success/failure + latency per circuit attempt
+- [x] Pool health metrics — `Handler.Metrics()` via the new optional `fallback.Metricer` interface exposes node count, regional distribution, reputation summary, and gossip stats in the IPC `status` JSON payload
 
 ### v1.0.0 — Stable Release
 - [ ] Full fallback chain working on all 3 platforms

@@ -52,6 +52,12 @@ type Labeled interface {
 	Label() string
 }
 
+// Metricer is an optional interface a Handler may implement to expose
+// method-specific metrics (e.g. Pheron pool health) in status output.
+type Metricer interface {
+	Metrics() map[string]interface{}
+}
+
 // Manager orchestrates the fallback chain.
 type Manager struct {
 	// methods: ordered list of methods to try
@@ -168,6 +174,11 @@ func (m *Manager) Status() map[string]interface{} {
 		if l, ok := e.Handler.(Labeled); ok {
 			if label := l.Label(); label != "" {
 				entry["label"] = label
+			}
+		}
+		if m, ok := e.Handler.(Metricer); ok {
+			if metrics := m.Metrics(); len(metrics) > 0 {
+				entry["metrics"] = metrics
 			}
 		}
 		methods[i] = entry

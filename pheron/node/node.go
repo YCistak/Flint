@@ -26,15 +26,26 @@ const dialTimeout = 15 * time.Second
 type Server struct {
 	kp *crypto.KeyPair
 
-	mu  sync.Mutex
-	ln  net.Listener
-	wg  sync.WaitGroup
-	run bool
+	mu       sync.Mutex
+	ln       net.Listener
+	wg       sync.WaitGroup
+	run      bool
+	onGossip func([]byte) []byte
 }
 
 // New returns a relay server identified by kp.
 func New(kp *crypto.KeyPair) *Server {
 	return &Server{kp: kp}
+}
+
+// SetGossipHandler installs the callback invoked for inbound gossip requests.
+// The handler receives the peer's advertised list and returns the local list to
+// send back. It must be set before Start. If unset, gossip connections are
+// dropped.
+func (s *Server) SetGossipHandler(fn func([]byte) []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onGossip = fn
 }
 
 // PublicKey returns the node's static public key, used to build its pool
@@ -109,11 +120,45 @@ func (s *Server) acceptLoop(ln net.Listener) {
 	}
 }
 
-// handle processes one circuit connection: read the layer, decrypt it, then act
-// on the embedded command.
+// handle reads the one-byte message type and dispatches to the circuit or
+// gossip handler.
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 
+	var typ [1]byte
+	if _, err := io.ReadFull(conn, typ[:]); err != nil {
+		return
+	}
+	switch typ[0] {
+	case wire.MsgCircuit:
+		s.handleCircuit(conn)
+	case wire.MsgGossip:
+		s.handleGossip(conn)
+	default:
+		log.Printf("pheron/node: unknown message type %d", typ[0])
+	}
+}
+
+// handleGossip merges the peer's advertised list and replies with our own.
+func (s *Server) handleGossip(conn net.Conn) {
+	s.mu.Lock()
+	fn := s.onGossip
+	s.mu.Unlock()
+	if fn == nil {
+		return
+	}
+	req, err := wire.ReadFrame(conn)
+	if err != nil {
+		return
+	}
+	if err := wire.WriteFrame(conn, fn(req)); err != nil {
+		log.Printf("pheron/node: gossip reply: %v", err)
+	}
+}
+
+// handleCircuit processes one circuit connection: read the layer, decrypt it,
+// then act on the embedded command.
+func (s *Server) handleCircuit(conn net.Conn) {
 	blob, err := wire.ReadFrame(conn)
 	if err != nil {
 		return // client disconnected before sending the layer
@@ -147,6 +192,12 @@ func (s *Server) relayForward(client net.Conn, secret []byte, nextAddr string, i
 	}
 	defer next.Close()
 
+	// The next hop expects a message-type byte before the layer, just like a
+	// client opening a circuit.
+	if _, err := next.Write([]byte{wire.MsgCircuit}); err != nil {
+		log.Printf("pheron/node: forward message type: %v", err)
+		return
+	}
 	if err := wire.WriteFrame(next, inner); err != nil {
 		log.Printf("pheron/node: forward inner layer: %v", err)
 		return
