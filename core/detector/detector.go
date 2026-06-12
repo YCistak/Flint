@@ -3,12 +3,15 @@ package detector
 import (
 	"context"
 	"fmt"
-	"log"
+	"strings"
 	"time"
 
 	"github.com/YCistak/flint/core/config"
 	"github.com/YCistak/flint/core/dpi"
 	"github.com/YCistak/flint/core/fallback"
+	"github.com/YCistak/flint/pheron"
+	"github.com/YCistak/flint/pheron/crypto"
+	"github.com/YCistak/flint/pheron/pool"
 	"github.com/YCistak/flint/tor"
 	"github.com/YCistak/flint/tunnel/vless"
 )
@@ -69,41 +72,46 @@ func (d *Detector) VLESSHandler(server config.ServerConfig, listenSOCKS string) 
 	})
 }
 
-// PheronHandler returns a stub handler for the Pheron P2P relay (v0.4.0).
-func (d *Detector) PheronHandler() fallback.Handler {
-	return &StubHandler{name: "pheron"}
+// PheronHandler returns the Pheron P2P relay handler (v0.1 beta), built from the
+// daemon's Pheron config. The handler runs a local relay node, joins the pool
+// from the configured static bootstrap nodes, and exposes a SOCKS5 proxy that
+// routes through 2-hop circuits. At Start it enforces the 2-hop rule: if fewer
+// than two other nodes are available it fails so the chain falls through to Tor.
+//
+// listenSOCKS is the local SOCKS5 address for Pheron (distinct from the VLESS
+// proxy address).
+func (d *Detector) PheronHandler(cfg config.PheronConfig, listenSOCKS string) (fallback.Handler, error) {
+	bootstrap, err := ParseBootstrapNodes(cfg.BootstrapNodes)
+	if err != nil {
+		return nil, err
+	}
+	return pheron.New(pheron.Config{
+		ListenSOCKS: listenSOCKS,
+		NodeListen:  fmt.Sprintf(":%d", cfg.LocalPort),
+		Bootstrap:   bootstrap,
+	})
+}
+
+// ParseBootstrapNodes parses static bootstrap node descriptors of the form
+// "host:port@base64url-publickey" into pool nodes.
+func ParseBootstrapNodes(entries []string) ([]pool.Node, error) {
+	nodes := make([]pool.Node, 0, len(entries))
+	for _, e := range entries {
+		at := strings.LastIndex(e, "@")
+		if at < 0 {
+			return nil, fmt.Errorf("bootstrap node %q: want host:port@publickey", e)
+		}
+		addr, keyStr := e[:at], e[at+1:]
+		pk, err := crypto.ParsePublicKey(keyStr)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap node %q: %w", e, err)
+		}
+		nodes = append(nodes, pool.Node{Address: addr, PublicKey: pk})
+	}
+	return nodes, nil
 }
 
 // TorHandler returns the Tor fallback handler backed by a managed Tor process.
 func (d *Detector) TorHandler() fallback.Handler {
 	return tor.New("", "")
 }
-
-// ── StubHandler — placeholder for methods not yet implemented ────────────────
-
-// StubHandler satisfies fallback.Handler with no-op behaviour.
-type StubHandler struct {
-	name    string
-	running bool
-}
-
-func (h *StubHandler) Start(_ context.Context) error {
-	log.Printf("StubHandler[%s].Start()", h.name)
-	h.running = true
-	return nil
-}
-
-func (h *StubHandler) Stop(_ context.Context) error {
-	log.Printf("StubHandler[%s].Stop()", h.name)
-	h.running = false
-	return nil
-}
-
-func (h *StubHandler) Health(_ context.Context) error {
-	if !h.running {
-		return fmt.Errorf("%s: handler not running", h.name)
-	}
-	return nil
-}
-
-func (h *StubHandler) Name() string { return h.name }

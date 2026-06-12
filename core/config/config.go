@@ -67,7 +67,9 @@ func (t TunnelConfig) FirstEnabledServer() (ServerConfig, bool) {
 type PheronConfig struct {
 	// Enabled: whether to participate as a node
 	Enabled bool `toml:"enabled"`
-	// BootstrapNodes: hardcoded list of nodes to connect to initially
+	// BootstrapNodes: static seed peers, each "host:port@base64url-publickey".
+	// At least two are required for Pheron to form a 2-hop circuit; with fewer
+	// the daemon falls through to Tor.
 	BootstrapNodes []string `toml:"bootstrap_nodes"`
 	// LocalPort: port to listen on for incoming connections
 	LocalPort int `toml:"local_port"`

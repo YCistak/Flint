@@ -167,13 +167,13 @@ A bundled blocklist ships with Flint — known blocked domains/IPs for Turkey, R
 - [x] Connection health monitoring — `Handler.Health` pings 1.1.1.1:80 through the tunnel; background `monitor` goroutine re-pings every 30s and logs health transitions
 
 ### v0.4.0 — Pheron v0.1 (Beta)
-- [ ] Pheron node server (relay mode)
-- [ ] Pheron client (routing mode)
-- [ ] Onion encryption (X25519 key exchange + ChaCha20-Poly1305)
-- [ ] Basic peer discovery (static bootstrap nodes)
-- [ ] 2-hop enforcement — fallback to Tor if pool < 2 nodes
-- [ ] Node pool join/leave on Flint open/close
-- [ ] Labeled "Beta" in CLI
+- [x] Pheron node server (relay mode) — `pheron/node` (accepts one onion layer per connection, decrypts with static key, forwards inner blob to next hop or connects to destination), relays via layered `SecureConn`
+- [x] Pheron client (routing mode) — `pheron/client` (seals inner layer to hop2, wraps in hop1 layer, dials hop1, streams through nested `SecureConn`), exposes 2-hop `Circuit`; SOCKS5 front-end in `pheron/handler.go`
+- [x] Onion encryption (X25519 key exchange + ChaCha20-Poly1305) — `pheron/crypto` (`Seal`/`Open` sealed box with ephemeral sender key + HKDF-SHA256; `SecureConn` length-framed AEAD stream with per-direction counter nonces), tested incl. multi-frame + reverse direction
+- [x] Basic peer discovery (static bootstrap nodes) — `pheron/pool` seeded from `config.Pheron.BootstrapNodes` (`host:port@base64url-pubkey`), parsed by `detector.ParseBootstrapNodes`
+- [x] 2-hop enforcement — fallback to Tor if pool < 2 nodes — `Handler.Start` fails when `pool.Count() < 2`; `pool.SelectTwo` returns `ErrInsufficientNodes` and two distinct hops, tested
+- [x] Node pool join/leave on Flint open/close — `pool.Join` on `Handler.Start` (runs local relay too), `pool.Leave` on `Handler.Stop`
+- [x] Labeled "Beta" in CLI — `Handler.Label()` returns "beta" via the optional `fallback.Labeled` interface; surfaced in the status JSON payload
 
 ### v0.5.0 — Pheron v0.2 (Stable)
 - [ ] Distributed peer discovery (no central bootstrap dependency)

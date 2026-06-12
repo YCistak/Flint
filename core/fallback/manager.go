@@ -45,6 +45,13 @@ type Handler interface {
 	Name() string
 }
 
+// Labeled is an optional interface a Handler may implement to advertise a
+// stability label (e.g. "beta") that surfaces in status output without changing
+// the method's Name (which the manager uses for forced-method matching).
+type Labeled interface {
+	Label() string
+}
+
 // Manager orchestrates the fallback chain.
 type Manager struct {
 	// methods: ordered list of methods to try
@@ -153,11 +160,17 @@ func (m *Manager) Current() string {
 func (m *Manager) Status() map[string]interface{} {
 	methods := make([]map[string]interface{}, len(m.methods))
 	for i, e := range m.methods {
-		methods[i] = map[string]interface{}{
+		entry := map[string]interface{}{
 			"name":   e.Handler.Name(),
 			"status": string(e.Status),
 			"error":  e.LastError,
 		}
+		if l, ok := e.Handler.(Labeled); ok {
+			if label := l.Label(); label != "" {
+				entry["label"] = label
+			}
+		}
+		methods[i] = entry
 	}
 
 	return map[string]interface{}{

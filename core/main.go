@@ -16,6 +16,10 @@ import (
 	"github.com/YCistak/flint/core/ipc"
 )
 
+// pheronListenSOCKS is the local SOCKS5 address for the Pheron proxy. It is
+// kept distinct from the VLESS proxy (default 127.0.0.1:1080) so both can run.
+const pheronListenSOCKS = "127.0.0.1:1081"
+
 // Daemon represents the Flint daemon instance.
 type Daemon struct {
 	config  *config.Config
@@ -36,7 +40,16 @@ func NewDaemon(cfg *config.Config) (*Daemon, error) {
 		handlers = append(handlers, vlessHandler)
 		log.Printf("VPS tunnel configured: %s (%s:%d)", server.Name, server.Address, server.Port)
 	}
-	handlers = append(handlers, det.PheronHandler(), det.TorHandler())
+	if cfg.Pheron.Enabled {
+		pheronHandler, err := det.PheronHandler(cfg.Pheron, pheronListenSOCKS)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Pheron config: %w", err)
+		}
+		handlers = append(handlers, pheronHandler)
+		log.Printf("Pheron[beta] enabled: relay on :%d, %d bootstrap node(s)",
+			cfg.Pheron.LocalPort, len(cfg.Pheron.BootstrapNodes))
+	}
+	handlers = append(handlers, det.TorHandler())
 
 	return &Daemon{
 		config:  cfg,
