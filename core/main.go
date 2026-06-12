@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/YCistak/flint/core/config"
 	"github.com/YCistak/flint/core/detector"
@@ -23,7 +24,7 @@ type Daemon struct {
 
 // NewDaemon creates a new Daemon from cfg.
 func NewDaemon(cfg *config.Config) (*Daemon, error) {
-	det := detector.NewDetector()
+	det := detector.NewDetectorWithTTL(time.Duration(cfg.Daemon.DetectionCacheTTL) * time.Second)
 	handlers := []fallback.Handler{
 		det.DPIHandler(),
 		det.PheronHandler(),

@@ -150,15 +150,15 @@ A bundled blocklist ships with Flint — known blocked domains/IPs for Turkey, R
 - [x] Basic Go CLI (cobra with start/stop/status/add-vps/blocklist/node commands)
 - [x] Project structure (Go modules, Rust crate, config loader, fallback manager)
 - [x] Unix socket permissions set to 0666 so non-root users can connect without sudo
-- [ ] Auto-detect platform (Linux/Windows/macOS) — architecture in place, not yet integrated
-- [ ] Bundled blocklist (Turkey + Russia baseline) — not implemented
-- [ ] End-to-end DPI bypass integration — packet capture and strategies not yet wired to daemon
+- [x] Auto-detect platform (Linux/Windows/macOS) — `core/platform` (Detect + capture-backend mapping), tested
+- [x] Bundled blocklist (Turkey + Russia baseline) — `core/blocklist` (embedded baseline + loader), tested
+- [x] End-to-end DPI bypass integration — iptables rule management in `dpi/src/ffi.rs` (dpi_start adds NFQUEUE rule, dpi_stop removes it, with signal/panic cleanup), integration test in `core/dpi/dpi_integration_test.go`
 
 ### v0.2.0 — Tor Integration
-- [ ] Tor integration via bine/pt
-- [ ] Automatic fallback from DPI bypass to Tor
-- [ ] Detection engine (DNS + TCP + RST detection)
-- [ ] Detection cache (24h TTL)
+- [x] Tor integration via bine/pt (`tor/handler.go` — managed Tor process, bootstrap wait, SOCKS health check)
+- [x] Automatic fallback from DPI bypass to Tor (Tor handler in the fallback chain after the Pheron stub)
+- [x] Detection engine (DNS + TCP + RST/timeout detection) — `core/detector/engine.go`
+- [x] Detection cache (24h TTL, per-domain, invalidate-on-request) — `core/detector/cache.go`
 
 ### v0.3.0 — VPS Tunnel
 - [ ] VLESS protocol implementation

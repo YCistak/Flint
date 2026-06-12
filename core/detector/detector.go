@@ -4,17 +4,49 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/YCistak/flint/core/dpi"
 	"github.com/YCistak/flint/core/fallback"
+	"github.com/YCistak/flint/tor"
 )
 
-// Detector is a stub for v0.1.0. In later versions it will perform DNS/TCP/RST
-// detection and cache results per domain/IP.
-type Detector struct{}
+// Detector performs DNS/TCP/RST censorship detection, caches results per
+// domain, and supplies the fallback handlers for the daemon's method chain.
+type Detector struct {
+	engine *Engine
+	cache  *Cache
+}
 
-// NewDetector creates a new Detector.
-func NewDetector() *Detector { return &Detector{} }
+// NewDetector creates a Detector with the default 24h detection cache TTL.
+func NewDetector() *Detector {
+	return NewDetectorWithTTL(DefaultCacheTTL)
+}
+
+// NewDetectorWithTTL creates a Detector with a custom detection cache TTL.
+// A non-positive ttl falls back to DefaultCacheTTL.
+func NewDetectorWithTTL(ttl time.Duration) *Detector {
+	return &Detector{
+		engine: NewEngine(),
+		cache:  NewCache(ttl),
+	}
+}
+
+// Check probes a domain for censorship, returning a cached result when one is
+// still valid. Pass force=true to bypass the cache and re-probe.
+func (d *Detector) Check(ctx context.Context, domain string, force bool) Result {
+	if !force {
+		if res, ok := d.cache.Get(domain); ok {
+			return res
+		}
+	}
+	res := d.engine.Probe(ctx, domain)
+	d.cache.Set(domain, res)
+	return res
+}
+
+// Invalidate drops the cached detection result for domain.
+func (d *Detector) Invalidate(domain string) { d.cache.Invalidate(domain) }
 
 // DPIHandler returns a Handler that delegates to the compiled Rust dpi library.
 func (d *Detector) DPIHandler() fallback.Handler {
@@ -26,9 +58,9 @@ func (d *Detector) PheronHandler() fallback.Handler {
 	return &StubHandler{name: "pheron"}
 }
 
-// TorHandler returns a stub handler for Tor fallback (v0.2.0).
+// TorHandler returns the Tor fallback handler backed by a managed Tor process.
 func (d *Detector) TorHandler() fallback.Handler {
-	return &StubHandler{name: "tor"}
+	return tor.New("", "")
 }
 
 // ── StubHandler — placeholder for methods not yet implemented ────────────────

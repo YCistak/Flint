@@ -1,0 +1,23 @@
+# Flint bundled blocklist — baseline
+#
+# Known blocked or heavily throttled domains. Pre-seeds the detection cache so
+# common cases skip cold-start probing. One domain per line; blank lines and
+# lines beginning with '#' are ignored. Domains are matched case-insensitively.
+#
+# This is a minimal baseline (Turkey + Russia). The full list ships and updates
+# via `flint blocklist update`.
+
+# ── Turkey (TR) ──────────────────────────────────────────────────────────────
+discord.com
+discord.gg
+discordapp.com
+roblox.com
+wattpad.com
+
+# ── Russia (RU) ──────────────────────────────────────────────────────────────
+facebook.com
+instagram.com
+twitter.com
+x.com
+linkedin.com
+meduza.io
