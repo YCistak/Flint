@@ -4,8 +4,6 @@
 //! Go calls these three functions through CGo; everything else is internal.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-#[cfg(target_os = "linux")]
-use std::sync::atomic::AtomicUsize;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
@@ -31,7 +29,163 @@ fn thread_slot() -> &'static Mutex<Option<thread::JoinHandle<()>>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
-// ── iptables helpers (Linux only) ─────────────────────────────────────────────
+// ── Firewall backend (Linux only) ────────────────────────────────────────────
+//
+// Modern distros ship `iptables` as a thin compat shim over nftables, while
+// older ones use the legacy xtables backend.  We detect which is in play at
+// runtime and drive the NFQUEUE redirect rule through the matching tool:
+//   - nftables backend  → native `nft` commands in a dedicated `flint_dpi` table
+//   - iptables-legacy    → classic `iptables -A/-D OUTPUT ... NFQUEUE` rules
+// Both install the equivalent rule: tcp dport 443 → NFQUEUE queue 0.
+
+/// Name of the dedicated nftables table we create so cleanup is a single
+/// `nft delete table` and never touches the user's other rules.
+#[cfg(target_os = "linux")]
+const NFT_TABLE: &str = "flint_dpi";
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FirewallBackend {
+    Nftables,
+    IptablesLegacy,
+}
+
+/// True if `cmd --version` runs successfully, i.e. the binary exists on PATH.
+#[cfg(target_os = "linux")]
+fn command_available(cmd: &str) -> bool {
+    std::process::Command::new(cmd)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Detect the firewall backend in use.  We treat the system as nftables-based
+/// only when BOTH the `nft` tool is available AND `iptables --version` reports
+/// the `nf_tables` backend (e.g. "iptables v1.8.x (nf_tables)").  Otherwise we
+/// fall back to the legacy `iptables` path, which also covers the case where
+/// `nft` is missing entirely.  The detected backend is logged.
+#[cfg(target_os = "linux")]
+fn detect_firewall_backend() -> FirewallBackend {
+    let nft_available = command_available("nft");
+
+    let iptables_is_nft = std::process::Command::new("iptables")
+        .arg("--version")
+        .output()
+        .map(|o| {
+            let v = String::from_utf8_lossy(&o.stdout);
+            v.contains("nf_tables")
+        })
+        .unwrap_or(false);
+
+    if nft_available && iptables_is_nft {
+        eprintln!(
+            "[flint-dpi] firewall: detected nftables backend \
+             (nft available, iptables --version reports nf_tables) → using nft commands"
+        );
+        FirewallBackend::Nftables
+    } else {
+        eprintln!(
+            "[flint-dpi] firewall: detected iptables-legacy backend \
+             (nft_available={}, iptables_nf_tables={}) → using iptables commands",
+            nft_available, iptables_is_nft
+        );
+        FirewallBackend::IptablesLegacy
+    }
+}
+
+// ── iptables / nft helpers (Linux only) ───────────────────────────────────────
+
+/// Adds the NFQUEUE redirect rule using whichever backend is detected.
+#[cfg(target_os = "linux")]
+fn iptables_add() {
+    match detect_firewall_backend() {
+        FirewallBackend::Nftables => nft_add(),
+        FirewallBackend::IptablesLegacy => iptables_legacy_add(),
+    }
+}
+
+/// Removes the NFQUEUE redirect rule using whichever backend is detected.
+#[cfg(target_os = "linux")]
+fn iptables_remove() {
+    match detect_firewall_backend() {
+        FirewallBackend::Nftables => nft_remove(),
+        FirewallBackend::IptablesLegacy => iptables_legacy_remove(),
+    }
+}
+
+// ── nftables backend ──────────────────────────────────────────────────────────
+
+/// Run `nft <args>`, logging failures.  Returns true on exit code 0.
+#[cfg(target_os = "linux")]
+fn run_nft(args: &[&str]) -> bool {
+    match std::process::Command::new("nft").args(args).output() {
+        Ok(out) => {
+            if !out.status.success() {
+                eprintln!(
+                    "[flint-dpi] nft {:?}: exit={} stderr={:?}",
+                    args,
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr),
+                );
+            }
+            out.status.success()
+        }
+        Err(e) => {
+            eprintln!("[flint-dpi] nft {:?}: exec failed: {}", args, e);
+            false
+        }
+    }
+}
+
+/// Install the NFQUEUE rule via nftables in a dedicated `flint_dpi` table.
+#[cfg(target_os = "linux")]
+fn nft_add() {
+    eprintln!("[flint-dpi] nft_add: entered (nftables backend)");
+
+    // Start from a clean slate so repeated starts never stack duplicate rules.
+    let _ = run_nft(&["delete", "table", "ip", NFT_TABLE]);
+
+    let ok_table = run_nft(&["add", "table", "ip", NFT_TABLE]);
+    let ok_chain = run_nft(&[
+        "add", "chain", "ip", NFT_TABLE, "output",
+        "{ type filter hook output priority 0; policy accept; }",
+    ]);
+    let ok_rule = run_nft(&[
+        "add", "rule", "ip", NFT_TABLE, "output",
+        "tcp", "dport", "443", "queue", "num", "0",
+    ]);
+
+    if ok_table && ok_chain && ok_rule {
+        eprintln!(
+            "[flint-dpi] nft_add: NFQUEUE rule installed (table ip {} → tcp dport 443 queue num 0)",
+            NFT_TABLE
+        );
+        log::info!("nft: NFQUEUE rule added (table {})", NFT_TABLE);
+    } else {
+        eprintln!(
+            "[flint-dpi] nft_add: failed to install rule (table={} chain={} rule={})",
+            ok_table, ok_chain, ok_rule
+        );
+        log::warn!("nft: failed to add NFQUEUE rule");
+    }
+}
+
+/// Remove the dedicated `flint_dpi` nftables table (and its rule).
+#[cfg(target_os = "linux")]
+fn nft_remove() {
+    eprintln!(
+        "[flint-dpi] nft_remove: deleting table ip {} (nftables backend)",
+        NFT_TABLE
+    );
+    if run_nft(&["delete", "table", "ip", NFT_TABLE]) {
+        log::info!("nft: NFQUEUE rule removed (table {})", NFT_TABLE);
+    } else {
+        log::warn!("nft: remove rule failed (table {} may not exist)", NFT_TABLE);
+    }
+}
+
+// ── iptables-legacy backend ────────────────────────────────────────────────────
 
 /// Returns true if the NFQUEUE redirect rule is already present in OUTPUT.
 #[cfg(target_os = "linux")]
@@ -47,10 +201,10 @@ fn iptables_rule_exists() -> bool {
         .unwrap_or(false)
 }
 
-/// Adds the NFQUEUE redirect rule, skipping if it already exists.
+/// Adds the NFQUEUE redirect rule via legacy iptables, skipping if present.
 #[cfg(target_os = "linux")]
-fn iptables_add() {
-    eprintln!("[flint-dpi] iptables_add: entered");
+fn iptables_legacy_add() {
+    eprintln!("[flint-dpi] iptables_add: entered (iptables-legacy backend)");
 
     if iptables_rule_exists() {
         eprintln!("[flint-dpi] iptables_add: rule already present, skipping");
@@ -90,9 +244,10 @@ fn iptables_add() {
     eprintln!("[flint-dpi] iptables_add: done");
 }
 
-/// Removes the NFQUEUE redirect rule.
+/// Removes the NFQUEUE redirect rule via legacy iptables.
 #[cfg(target_os = "linux")]
-fn iptables_remove() {
+fn iptables_legacy_remove() {
+    eprintln!("[flint-dpi] iptables_remove: removing rule (iptables-legacy backend)");
     match std::process::Command::new("iptables")
         .args([
             "-D", "OUTPUT",
@@ -109,75 +264,31 @@ fn iptables_remove() {
 
 // ── Cleanup handlers (signal + panic) ────────────────────────────────────────
 
-// Previous SIGTERM/SIGINT handlers saved at installation time (Go's handlers).
-// We chain to them so Go's runtime signal machinery still runs after our cleanup.
-#[cfg(target_os = "linux")]
-static PREV_SIGTERM: AtomicUsize = AtomicUsize::new(0);
-#[cfg(target_os = "linux")]
-static PREV_SIGINT: AtomicUsize = AtomicUsize::new(0);
-
-/// Installs a Rust panic hook and SIGTERM/SIGINT handlers that both call
-/// `iptables_remove()` before chaining to the previously installed handler
-/// (which is Go's runtime handler).  Safe to call multiple times — installs
-/// exactly once via `Once`.
+/// Installs a Rust panic hook that removes the NFQUEUE firewall rule before
+/// chaining to the previous hook.  This is a best-effort safety net for an
+/// unexpected panic in the capture thread.  Safe to call multiple times —
+/// installs exactly once via `Once`.
+///
+/// We deliberately do **not** install SIGINT/SIGTERM handlers here.  The Go
+/// runtime owns those signals, and the daemon's normal shutdown path already
+/// calls `dpi_stop()` → `iptables_remove()` from ordinary (non-signal) context
+/// via a deferred `manager.Stop()`.  An earlier version installed a `sigaction`
+/// handler and chained to Go's `SA_SIGINFO` handler as a one-argument function;
+/// that passed a NULL siginfo/ucontext to the Go runtime and segfaulted it on
+/// Ctrl+C.  Spawning `nft`/`iptables` from signal context is also not
+/// async-signal-safe.  A rule leaked by a hard kill is reclaimed on the next
+/// start (`nft_add` deletes the table first; `iptables_add` checks for it).
 #[cfg(target_os = "linux")]
 fn install_cleanup_handlers() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // Panic hook: run iptables cleanup, then the previous hook (if any).
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             eprintln!("[flint-dpi] panic detected — removing iptables NFQUEUE rule");
             iptables_remove();
             prev_hook(info);
         }));
-
-        // Signal handlers: save whatever was there before (Go's handler) so
-        // we can chain to it after cleanup.
-        // SA_RESETHAND: the disposition is restored to SIG_DFL before our
-        // handler is invoked, so a second signal during cleanup terminates
-        // the process without looping.
-        unsafe {
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = signal_cleanup as *const () as usize;
-            sa.sa_flags = libc::SA_RESETHAND;
-            libc::sigemptyset(&mut sa.sa_mask);
-
-            let mut old: libc::sigaction = std::mem::zeroed();
-
-            libc::sigaction(libc::SIGTERM, &sa, &mut old);
-            PREV_SIGTERM.store(old.sa_sigaction, Ordering::SeqCst);
-
-            libc::sigaction(libc::SIGINT, &sa, &mut old);
-            PREV_SIGINT.store(old.sa_sigaction, Ordering::SeqCst);
-        }
     });
-}
-
-/// Signal handler for SIGTERM and SIGINT.  Removes the iptables rule, then
-/// chains to Go's previously installed handler so Go's shutdown sequence
-/// (and its own defer-based cleanup) can proceed normally.
-#[cfg(target_os = "linux")]
-extern "C" fn signal_cleanup(sig: libc::c_int) {
-    iptables_remove();
-
-    // SIG_DFL = 0, SIG_IGN = 1; anything above 1 is a real handler address.
-    let prev = if sig == libc::SIGTERM {
-        PREV_SIGTERM.load(Ordering::SeqCst)
-    } else {
-        PREV_SIGINT.load(Ordering::SeqCst)
-    };
-
-    if prev > 1 {
-        // Call Go's handler.  SA_RESETHAND already reset the disposition to
-        // SIG_DFL, so if Go's handler re-raises the signal it will terminate.
-        unsafe {
-            let f: extern "C" fn(libc::c_int) = std::mem::transmute(prev);
-            f(sig);
-        }
-    }
-    // If prev was SIG_DFL (0) or SIG_IGN (1): SA_RESETHAND has already
-    // restored SIG_DFL, so the process will terminate on the next delivery.
 }
 
 // ── Public C API ─────────────────────────────────────────────────────────────
@@ -301,12 +412,11 @@ fn platform_loop(
 
 // ── Linux: nfqueue capture loop ───────────────────────────────────────────────
 //
-// NOTE on verdict flow: the current recv() implementation accepts each packet
-// before returning it, so the strategy's replacement packets are injected
-// *in addition* to the original.  A future revision should:
-//   1. Change recv() to hold the verdict.
-//   2. Drop the original after injecting all replacement packets.
-// This is tracked as a TODO in PLANNED.md (end-to-end integration).
+// Verdict flow: recv() now holds the verdict instead of accepting eagerly.  For
+// each packet we run the strategy first, then verdict:
+//   - strategy transformed the packet (e.g. split ClientHello) → inject the
+//     replacement fragments, then DROP the original so it is not duplicated.
+//   - strategy passed the packet through unchanged → ACCEPT the original.
 
 #[cfg(target_os = "linux")]
 fn linux_loop(
@@ -317,24 +427,47 @@ fn linux_loop(
     let mut handle = PacketHandle::open(0)?;
 
     while !STOP.load(Ordering::Relaxed) {
+        // 1) Receive the packet (verdict deferred — held pending in the handle).
         let pkt = handle.recv()?;
 
+        // 2-3) Run the strategy.  It parses IP/TCP and detects a TLS ClientHello
+        //       internally; a non-matching packet is returned unchanged.
         match strategy.apply(&pkt.data) {
             Ok(replacements) => {
-                // If the strategy produced a different set of packets (e.g. two
-                // fragments for split-hello), inject them.  The original was
-                // already accepted by recv(); see note above.
-                if replacements.len() != 1
-                    || replacements[0] != pkt.data
-                {
+                let transformed =
+                    replacements.len() != 1 || replacements[0] != pkt.data;
+
+                if transformed {
+                    // 4) ClientHello matched: inject the split fragments, then
+                    //    DROP the original so only the fragments reach the wire.
+                    let mut all_sent = true;
                     for r in &replacements {
                         if let Err(e) = handle.send(r) {
                             log::warn!("DPI send error: {}", e);
+                            all_sent = false;
                         }
                     }
+
+                    if all_sent {
+                        handle.drop_original()?;
+                    } else {
+                        // A fragment failed to inject — fall back to ACCEPT so
+                        // the connection is not silently broken.
+                        log::warn!(
+                            "DPI: fragment injection failed; accepting original to avoid stall"
+                        );
+                        handle.accept()?;
+                    }
+                } else {
+                    // 5) Not a ClientHello (or strategy declined): pass through.
+                    handle.accept()?;
                 }
             }
-            Err(e) => log::warn!("strategy error: {}", e),
+            Err(e) => {
+                // On strategy error, accept the original so traffic still flows.
+                log::warn!("strategy error: {}", e);
+                handle.accept()?;
+            }
         }
     }
 

@@ -214,6 +214,10 @@ func (h *Handler) Health(ctx context.Context) error {
 // Name satisfies fallback.Handler.
 func (h *Handler) Name() string { return "vless" }
 
+// SOCKSAddr returns the local SOCKS5 proxy address this handler exposes, so the
+// transparent-redirect layer can use it as an upstream.
+func (h *Handler) SOCKSAddr() string { return h.cfg.ListenSOCKS }
+
 // monitor pings the tunnel on a fixed interval and logs transitions. The
 // fallback manager owns failover decisions; this loop provides visibility into
 // tunnel health between manager-driven checks.

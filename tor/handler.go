@@ -10,6 +10,7 @@ package tor
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -41,6 +42,9 @@ type Handler struct {
 
 	mu      sync.Mutex
 	process *tor.Tor
+	// dialer is created lazily on first DialContext and reused across
+	// connections; bine's Dialer manages circuit state internally.
+	dialer *tor.Dialer
 }
 
 // New returns a Tor Handler. exePath and dataDir may be empty to use bine's
@@ -94,6 +98,7 @@ func (h *Handler) Stop(_ context.Context) error {
 
 	err := h.process.Close()
 	h.process = nil
+	h.dialer = nil
 	if err != nil {
 		return fmt.Errorf("tor: failed to stop process: %w", err)
 	}
@@ -129,3 +134,31 @@ func (h *Handler) Health(ctx context.Context) error {
 
 // Name satisfies fallback.Handler.
 func (h *Handler) Name() string { return "tor" }
+
+// DialContext routes a connection through Tor, satisfying the transparent-proxy
+// upstream contract (redirect.Upstream). The bine dialer is created once and
+// reused; it is reset when the handler stops.
+func (h *Handler) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	h.mu.Lock()
+	t := h.process
+	d := h.dialer
+	h.mu.Unlock()
+
+	if t == nil {
+		return nil, fmt.Errorf("tor: handler not running")
+	}
+	if d == nil {
+		nd, err := t.Dialer(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("tor: failed to create dialer: %w", err)
+		}
+		h.mu.Lock()
+		// Another goroutine may have set it first; keep whichever is present.
+		if h.dialer == nil {
+			h.dialer = nd
+		}
+		d = h.dialer
+		h.mu.Unlock()
+	}
+	return d.DialContext(ctx, network, addr)
+}

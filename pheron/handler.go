@@ -92,6 +92,10 @@ func (h *Handler) Name() string { return "pheron" }
 // Label marks Pheron as beta in status output (fallback.Labeled).
 func (h *Handler) Label() string { return "beta" }
 
+// SOCKSAddr returns the local SOCKS5 proxy address this handler exposes, so the
+// transparent-redirect layer can use it as an upstream.
+func (h *Handler) SOCKSAddr() string { return h.cfg.ListenSOCKS }
+
 // Start brings up the relay, joins the pool, and — only if at least two other
 // nodes are available — opens the local SOCKS5 proxy. With fewer than two nodes
 // it returns an error so the manager falls through to Tor.
