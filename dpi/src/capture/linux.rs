@@ -4,29 +4,67 @@
 //!   iptables -I OUTPUT -p tcp --dport 443 -j NFQUEUE --queue-num 0
 //! to divert packets into queue #0 before this handle is opened.
 
-use nfq::{Queue, Verdict};
+use nfq::{Message, Queue, Verdict};
 
 use super::{CaptureError, OwnedPacket};
 
+/// Per-packet tracing is extremely verbose (two lines per packet) and only
+/// useful when diagnosing capture/parse issues.  It is off by default and
+/// enabled with `FLINT_DPI_TRACE=1`.  The env var is read once and cached.
+fn trace_enabled() -> bool {
+    use std::sync::OnceLock;
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        matches!(
+            std::env::var("FLINT_DPI_TRACE").as_deref(),
+            Ok("1") | Ok("true")
+        )
+    })
+}
+
 pub struct PacketHandle {
     queue: Queue,
+    /// The most recently received message, awaiting a verdict.  The verdict is
+    /// deliberately deferred until *after* the strategy layer has run, so that
+    /// a transformed packet (e.g. a split ClientHello) can be DROPped while a
+    /// pass-through packet is ACCEPTed.  See `recv` / `accept` / `drop_original`.
+    pending: Option<Message>,
 }
 
 impl PacketHandle {
     /// Open nfqueue number `queue_num`.  The caller must have set up the
     /// iptables/nftables rule that directs traffic into this queue.
     pub fn open(queue_num: u16) -> Result<Self, CaptureError> {
+        eprintln!("[flint-dpi] capture: opening nfqueue, binding to queue #{}", queue_num);
         let mut queue = Queue::open()
             .map_err(|e| CaptureError::Init(e.to_string()))?;
         queue
             .bind(queue_num)
-            .map_err(|e| CaptureError::Init(e.to_string()))?;
-        Ok(PacketHandle { queue })
+            .map_err(|e| {
+                eprintln!("[flint-dpi] capture: bind to queue #{} FAILED: {}", queue_num, e);
+                CaptureError::Init(e.to_string())
+            })?;
+        eprintln!("[flint-dpi] capture: bound to queue #{}, ready to receive packets", queue_num);
+        Ok(PacketHandle { queue, pending: None })
     }
 
     /// Block until the next packet arrives from the kernel queue.
+    ///
+    /// The verdict is **not** issued here.  The returned packet is held pending
+    /// in the handle; the caller must subsequently call exactly one of
+    /// [`accept`](Self::accept) or [`drop_original`](Self::drop_original) to
+    /// release it back to the kernel.  Deferring the verdict is what lets the
+    /// strategy layer decide between ACCEPT (pass-through) and DROP (we injected
+    /// replacement fragments instead).
     pub fn recv(&mut self) -> Result<OwnedPacket, CaptureError> {
-        let mut msg = self
+        // Defensive: if a previous packet was never verdicted (programming
+        // error in the loop), accept it now so the kernel queue does not stall.
+        if let Some(mut stale) = self.pending.take() {
+            stale.set_verdict(Verdict::Accept);
+            let _ = self.queue.verdict(stale);
+        }
+
+        let msg = self
             .queue
             .recv()
             .map_err(|e| CaptureError::Recv(e.to_string()))?;
@@ -34,14 +72,63 @@ impl PacketHandle {
         let id   = msg.get_packet_id() as u64;
         let data = msg.get_payload().to_vec();
 
-        // Default verdict: accept (pass through unmodified).
-        // The strategy layer will call `send` with a modified copy instead.
-        msg.set_verdict(Verdict::Accept);
-        self.queue
-            .verdict(msg)
-            .map_err(|e| CaptureError::Recv(e.to_string()))?;
+        if trace_enabled() {
+            // Dump the first 20 bytes (the IPv4 header) as hex so capture/parse
+            // issues can be diagnosed; the leading byte's high nibble should be
+            // 0x4 (IPv4) or the strategy's IP parse rejects the packet.
+            let preview = data.len().min(20);
+            let hex: String = data[..preview]
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!(
+                "[flint-dpi] capture: received packet id={} len={} (verdict deferred); first {} bytes: {}",
+                id, data.len(), preview, hex
+            );
+        }
+
+        self.pending = Some(msg);
 
         Ok(OwnedPacket { data, id })
+    }
+
+    /// Verdict the pending packet as ACCEPT — pass it through to the network
+    /// unmodified.  Used when the strategy did not transform the packet.
+    pub fn accept(&mut self) -> Result<(), CaptureError> {
+        match self.pending.take() {
+            Some(mut msg) => {
+                let id = msg.get_packet_id() as u64;
+                msg.set_verdict(Verdict::Accept);
+                self.queue
+                    .verdict(msg)
+                    .map_err(|e| CaptureError::Recv(e.to_string()))?;
+                if trace_enabled() {
+                    eprintln!("[flint-dpi] capture: verdicted packet id={} (Accept)", id);
+                }
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Verdict the pending packet as DROP — discard the original.  Used after
+    /// the strategy has injected replacement fragments (e.g. a split
+    /// ClientHello), so that only those fragments reach the network and the
+    /// original is not duplicated.
+    pub fn drop_original(&mut self) -> Result<(), CaptureError> {
+        match self.pending.take() {
+            Some(mut msg) => {
+                let id = msg.get_packet_id() as u64;
+                msg.set_verdict(Verdict::Drop);
+                self.queue
+                    .verdict(msg)
+                    .map_err(|e| CaptureError::Recv(e.to_string()))?;
+                eprintln!("[flint-dpi] capture: verdicted packet id={} (Drop — original suppressed)", id);
+                Ok(())
+            }
+            None => Ok(()),
+        }
     }
 
     /// Re-inject a (possibly modified) raw IPv4 packet via a raw socket.

@@ -162,6 +162,15 @@ func (m *Manager) Current() string {
 	return m.current.Handler.Name()
 }
 
+// CurrentHandler returns the currently active handler, or nil if none is up.
+// Used by the transparent-redirect layer to resolve its upstream.
+func (m *Manager) CurrentHandler() Handler {
+	if m.current == nil {
+		return nil
+	}
+	return m.current.Handler
+}
+
 // Status returns the status of all methods.
 func (m *Manager) Status() map[string]interface{} {
 	methods := make([]map[string]interface{}, len(m.methods))

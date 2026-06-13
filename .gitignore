@@ -55,3 +55,27 @@ rustc-ice-*.txt
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 flint
+
+# ── Flint project additions ───────────────────────────────────────────────────
+# Editor / IDE settings (per-developer, not shared)
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+*.swp
+
+# Static / import libraries (Rust + Windows build output)
+*.a
+*.lib
+
+# Logs and local daemon runtime artifacts
+*.log
+*.pid
+*.sock
+
+# Local user config (may contain VPS UUID / server details)
+config.toml
+
+scripts/
